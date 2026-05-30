@@ -2,8 +2,9 @@ name: Sync Upstream Feed
 
 on:
   schedule:
-    # Run after upstream daily digest usually finishes around 00:40 UTC.
-    - cron: "30 1 * * *"
+    # Upstream usually finishes around 00:40 UTC; run twice to catch late builds.
+    - cron: "50 0 * * *"
+    - cron: "20 1 * * *"
   workflow_dispatch:
 
 permissions:
