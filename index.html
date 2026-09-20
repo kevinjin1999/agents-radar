@@ -460,7 +460,9 @@ async function loadReport(date, report, push = true) {
   if (key === currentKey) return;
   currentKey = key;
 
-  if (push) history.pushState(null, '', `#${key}`);
+  // Retry of the same report (e.g. after a failed load) already has this
+  // hash in session history — pushing again would need a second back-press.
+  if (push && location.hash !== `#${key}`) history.pushState(null, '', `#${key}`);
 
   // Sync sidebar
   document.querySelectorAll('.rpt-btn').forEach(b => b.classList.toggle('active', b.dataset.key === key));
@@ -484,8 +486,15 @@ async function loadReport(date, report, push = true) {
     }
   });
 
-  // Close mobile sidebar
-  document.getElementById('sidebar').classList.remove('open');
+  // Close mobile sidebar and reset its inner scroll — a retained scrollTop
+  // pushes the toggle row out of the collapsed 48px strip, making the bar
+  // look like it vanished (and it can't be clicked to reopen). Only reset
+  // when an expanded mobile sidebar is actually being collapsed, so the
+  // scroll position of the desktop 300px list is preserved.
+  const sidebar = document.getElementById('sidebar');
+  const wasOpen = sidebar.classList.contains('open');
+  sidebar.classList.remove('open');
+  if (wasOpen) sidebar.scrollTop = 0;
 
   const cwrap = document.getElementById('cwrap');
   setContent('<div class="msg"><div class="msg-icon">⏳</div><div>Loading…</div></div>');
@@ -493,21 +502,34 @@ async function loadReport(date, report, push = true) {
 
   try {
     let res;
-    // Retry transient network failures (e.g. a cold CDN edge) before giving up.
+    // Retry transient failures: network errors and statuses that may recover
+    // on their own (5xx, 429). A 4xx like 404 means the report is really
+    // missing (manifest/digests drift) — fail immediately instead of
+    // stalling the error behind three retries and backoff.
     for (let attempt = 0; ; attempt++) {
       try {
         res = await fetch(`./digests/${date}/${report}.md`);
-        break;
+        if (res.ok || (res.status < 500 && res.status !== 429) || attempt >= 2) break;
       } catch (netErr) {
         if (attempt >= 2) throw netErr;
-        await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
       }
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const raw = await res.text();
+    // Drop the response if the user has navigated to another report while
+    // this fetch was in flight, so a slow stale reply can't overwrite it.
+    if (currentKey !== key) return;
     const safe = renderMarkdown(raw);
     setContent(`<div class="md fade">${safe}</div>`);
   } catch (e) {
+    // The user has already switched to another report — don't overwrite its
+    // content with this stale request's error.
+    if (currentKey !== key) return;
+    // Reset the guard so clicking the same report again retries; otherwise
+    // the early-return above turns every further click into a silent no-op
+    // and the only way out is loading a different report first.
+    currentKey = null;
     setContent(`<div class="msg"><div class="msg-icon">⚠️</div><div>加载失败：${e.message}</div></div>`);
   }
 }
